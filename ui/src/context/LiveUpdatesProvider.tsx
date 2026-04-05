@@ -408,7 +408,7 @@ async function hydrateVisibleIssueComment(
   }
 }
 
-const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added", "issue.merge_approved", "issue.changes_requested"]);
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -472,12 +472,33 @@ function buildActivityToast(
     };
   }
 
+  if (action === "issue.merge_approved") {
+    return {
+      title: `Merge approved on ${issue.ref}`,
+      body: issue.title ? truncate(issue.title, 96) : undefined,
+      tone: "success",
+      action: { label: `View ${issue.ref}`, href: issue.href },
+      dedupeKey: `activity:${action}:${entityId}`,
+    };
+  }
+
+  if (action === "issue.changes_requested") {
+    return {
+      title: `Changes requested on ${issue.ref}`,
+      body: issue.title ? truncate(issue.title, 96) : undefined,
+      tone: "warn",
+      action: { label: `View ${issue.ref}`, href: issue.href },
+      dedupeKey: `activity:${action}:${entityId}`,
+    };
+  }
+
   if (action === "issue.updated") {
     if (readString(details?.source) === "comment") {
       // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
       return null;
     }
     const changeDesc = describeIssueUpdate(details);
+    const isReviewReady = details?.status === "in_review";
     const body = changeDesc
       ? issue.title
         ? `${truncate(issue.title, 64)} - ${changeDesc}`
@@ -486,9 +507,9 @@ function buildActivityToast(
         ? truncate(issue.title, 96)
         : issue.label;
     return {
-      title: `${actor} updated ${issue.ref}`,
+      title: isReviewReady ? `${issue.ref} ready for review` : `${actor} updated ${issue.ref}`,
       body: truncate(body, 100),
-      tone: "info",
+      tone: isReviewReady ? "warn" : "info",
       action: { label: `View ${issue.ref}`, href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
     };
