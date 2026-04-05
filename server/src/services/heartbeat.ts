@@ -6678,7 +6678,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      // When process_lost retries are exhausted, the agent itself is fine —
+      // it was a transient child process death. Reset to idle, not error.
+      const processLostRetriesExhausted = tracksLocalChild && !!run.processPid && !shouldRetry;
+      await finalizeAgentStatus(run.agentId, processLostRetriesExhausted ? "cancelled" : "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
