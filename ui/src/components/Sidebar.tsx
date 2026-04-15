@@ -24,6 +24,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -94,6 +95,11 @@ export function Sidebar() {
             className="flex flex-col gap-0.5"
             itemClassName="text-[13px] font-medium"
             missingBehavior="placeholder"
+          />
+          <PluginLauncherOutlet
+            placementZones={["sidebar"]}
+            context={pluginContext}
+            className="flex flex-col gap-0.5"
           />
         </div>
 
