@@ -6,6 +6,7 @@ import {
   DollarSign,
   History,
   Search,
+  ShieldCheck,
   SquarePen,
   Network,
   Boxes,
@@ -21,6 +22,7 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { approvalsApi } from "../api/approvals";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
@@ -29,7 +31,6 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
-import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
@@ -47,6 +48,13 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const { data: pendingApprovals } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!, "pending"),
+    queryFn: () => approvalsApi.list(selectedCompanyId!, "pending"),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+  const pendingApprovalCount = pendingApprovals?.length ?? 0;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -113,6 +121,13 @@ export function Sidebar() {
             context={pluginContext}
             className="flex flex-col gap-0.5"
             itemClassName="text-[13px] font-medium"
+          />
+          <SidebarNavItem
+            to="/approvals/pending"
+            label="Approvals"
+            icon={ShieldCheck}
+            badge={pendingApprovalCount > 0 ? pendingApprovalCount : undefined}
+            badgeTone={pendingApprovalCount > 0 ? "danger" : "default"}
           />
         </SidebarSection>
 
