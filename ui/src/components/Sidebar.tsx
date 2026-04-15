@@ -6,6 +6,7 @@ import {
   DollarSign,
   History,
   Search,
+  ShieldCheck,
   SquarePen,
   Network,
   Boxes,
@@ -20,6 +21,7 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { approvalsApi } from "../api/approvals";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
@@ -45,6 +47,13 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const { data: pendingApprovals } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!, "pending"),
+    queryFn: () => approvalsApi.list(selectedCompanyId!, "pending"),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+  const pendingApprovalCount = pendingApprovals?.length ?? 0;
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -110,6 +119,13 @@ export function Sidebar() {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem
+            to="/approvals/pending"
+            label="Approvals"
+            icon={ShieldCheck}
+            badge={pendingApprovalCount > 0 ? pendingApprovalCount : undefined}
+            badgeTone={pendingApprovalCount > 0 ? "danger" : "default"}
+          />
         </SidebarSection>
 
         <SidebarProjects />
