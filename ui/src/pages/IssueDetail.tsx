@@ -1677,7 +1677,8 @@ export function IssueDetail() {
   const approveMerge = useMutation({
     mutationFn: () => issuesApi.approveMerge(issueId!),
     onSuccess: () => {
-      invalidateIssue();
+      invalidateIssueDetail();
+      invalidateIssueRunState();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
     },
   });
@@ -1685,7 +1686,8 @@ export function IssueDetail() {
   const requestChanges = useMutation({
     mutationFn: () => issuesApi.requestChanges(issueId!),
     onSuccess: () => {
-      invalidateIssue();
+      invalidateIssueDetail();
+      invalidateIssueRunState();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
     },
   });
