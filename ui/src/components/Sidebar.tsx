@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
