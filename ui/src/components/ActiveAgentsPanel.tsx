@@ -23,6 +23,12 @@ function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
 }
 
+// SharpAPI dashboard: only show currently-running runs (plus finished-filler).
+// Queued runs are hidden — they're just "about to start" and clutter the panel.
+function isRunVisibleOnDashboard(run: LiveRunForIssue): boolean {
+  return run.status !== "queued";
+}
+
 interface ActiveAgentsPanelProps {
   companyId: string;
   title?: string;
@@ -53,7 +59,10 @@ export function ActiveAgentsPanel({
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
   });
 
-  const runs = liveRuns ?? [];
+  const runs = useMemo(
+    () => (liveRuns ?? []).filter(isRunVisibleOnDashboard),
+    [liveRuns],
+  );
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const { data: issues } = useQuery({
