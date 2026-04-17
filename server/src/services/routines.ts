@@ -896,9 +896,11 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      // nextRunAt is owned by tickScheduledTriggers (scheduled fires) and
+      // createTrigger/updateTrigger (CRUD). Dispatch must not write it —
+      // doing so can overwrite the scheduler's freshly-claimed value with a
+      // stale computation (race from slow transactions or enqueue_missed_with_cap)
+      // and can corrupt the cron schedule on manual/webhook fires.
 
       // Skip issue creation — fire heartbeat directly
       if (input.routine.skipIssueCreation) {
@@ -924,7 +926,6 @@ export function routineService(
           triggerId: input.trigger?.id ?? null,
           triggeredAt,
           status: "completed",
-          nextRunAt,
         }, txDb);
         return updated ?? createdRun;
       }
@@ -954,7 +955,6 @@ export function routineService(
             triggeredAt,
             status,
             issueId: activeIssue.id,
-            nextRunAt,
           }, txDb);
           return updated ?? createdRun;
         }
@@ -1014,7 +1014,6 @@ export function routineService(
             triggeredAt,
             status,
             issueId: existingIssue.id,
-            nextRunAt,
           }, txDb);
           return updated ?? createdRun;
         }
@@ -1039,7 +1038,6 @@ export function routineService(
           triggeredAt,
           status: "issue_created",
           issueId: createdIssue.id,
-          nextRunAt,
         }, txDb);
         return updated ?? createdRun;
       } catch (error) {
@@ -1057,7 +1055,6 @@ export function routineService(
           triggerId: input.trigger?.id ?? null,
           triggeredAt,
           status: "failed",
-          nextRunAt,
         }, txDb);
         return failed ?? createdRun;
       }
