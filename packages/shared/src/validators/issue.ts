@@ -525,15 +525,26 @@ export const issueCommentMetadataSchema = z.object({
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
-export const addIssueCommentSchema = z.object({
-  body: multilineTextSchema.pipe(z.string().min(1)),
-  authorType: issueCommentAuthorTypeSchema.optional(),
-  presentation: issueCommentPresentationSchema.nullable().optional(),
-  metadata: issueCommentMetadataSchema.nullable().optional(),
-  reopen: z.boolean().optional(),
-  resume: z.boolean().optional(),
-  interrupt: z.boolean().optional(),
-});
+export const addIssueCommentSchema = z.preprocess(
+  (val: unknown) => {
+    // Accept `comment` as alias for `body` — agents often conflate the
+    // PATCH /issues/:id field name (`comment`) with this POST endpoint.
+    if (val && typeof val === "object" && "comment" in val && !("body" in val)) {
+      const { comment, ...rest } = val as Record<string, unknown>;
+      return { body: comment, ...rest };
+    }
+    return val;
+  },
+  z.object({
+    body: multilineTextSchema.pipe(z.string().min(1)),
+    authorType: issueCommentAuthorTypeSchema.optional(),
+    presentation: issueCommentPresentationSchema.nullable().optional(),
+    metadata: issueCommentMetadataSchema.nullable().optional(),
+    reopen: z.boolean().optional(),
+    resume: z.boolean().optional(),
+    interrupt: z.boolean().optional(),
+  }),
+);
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
