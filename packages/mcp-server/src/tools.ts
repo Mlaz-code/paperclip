@@ -109,7 +109,10 @@ const checkoutIssueToolSchema = z.object({
 
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
-}).merge(addIssueCommentSchema);
+  body: z.string().min(1).describe("Comment body (markdown)"),
+  reopen: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
+});
 
 const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
