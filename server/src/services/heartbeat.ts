@@ -6010,6 +6010,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
+    await db
+      .update(agents)
+      .set({ lastActivityAt: claimedAt, updatedAt: claimedAt })
+      .where(eq(agents.id, claimed.agentId));
+
     publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
@@ -9942,6 +9947,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
       };
+    },
+
+    tickActiveAgentActivity: async (now = new Date()) => {
+      const updated = await db
+        .update(agents)
+        .set({ lastActivityAt: now, updatedAt: now })
+        .where(
+          inArray(
+            agents.id,
+            db
+              .select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.status, "running")),
+          ),
+        )
+        .returning({ id: agents.id });
+      return { ticked: updated.length };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
