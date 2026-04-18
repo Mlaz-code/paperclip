@@ -1178,6 +1178,7 @@ export function agentRoutes(
         adapterType: agentsTable.adapterType,
         runtimeConfig: agentsTable.runtimeConfig,
         lastHeartbeatAt: agentsTable.lastHeartbeatAt,
+        lastActivityAt: agentsTable.lastActivityAt,
         companyName: companies.name,
         companyIssuePrefix: companies.issuePrefix,
       })
@@ -1208,6 +1209,7 @@ export function agentRoutes(
           heartbeatEnabled: policy.enabled,
           schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
           lastHeartbeatAt: row.lastHeartbeatAt,
+          lastActivityAt: row.lastActivityAt,
         };
       })
       .filter((item) =>
