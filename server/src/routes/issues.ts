@@ -59,6 +59,7 @@ import {
   agentService,
   companyService,
   companySearchService,
+  costService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -866,6 +867,7 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
+  const costs = costService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -2021,6 +2023,19 @@ export function issueRoutes(
     });
     res.json(removed);
   });
+
+  router.get("/issues/:id/cost-summary", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const summary = await costs.byIssue(issue.companyId, issue.id);
+    res.json(summary);
+  });
+
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
