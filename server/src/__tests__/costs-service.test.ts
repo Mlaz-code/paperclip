@@ -115,11 +115,16 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
+    issueService: () => ({ create: vi.fn() }),
     logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+
+  vi.doMock("../services/budget-auto-pause-alert.js", () => ({
+    buildBudgetAutoPauseIssueHook: () => async () => {},
   }));
 }
 
@@ -164,6 +169,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.doUnmock("../services/index.js");
   vi.doUnmock("../services/quota-windows.js");
+  vi.doUnmock("../services/budget-auto-pause-alert.js");
   vi.doUnmock("../routes/costs.js");
   vi.doUnmock("../middleware/index.js");
   registerModuleMocks();

@@ -17,8 +17,10 @@ import {
   agentService,
   issueService,
   heartbeatService,
+  issueService,
   logActivity,
 } from "../services/index.js";
+import { buildBudgetAutoPauseIssueHook } from "../services/budget-auto-pause-alert.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
@@ -52,8 +54,10 @@ export function costRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const issues = issueService(db);
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
+    onAutoPaused: buildBudgetAutoPauseIssueHook(db, issues),
   };
   const costs = costService(db, budgetHooks);
   const finance = financeService(db);
