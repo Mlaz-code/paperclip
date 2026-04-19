@@ -37,6 +37,6 @@ export const budgetIncidents = pgTable(
       table.policyId,
       table.windowStart,
       table.thresholdType,
-    ).where(sql`${table.status} <> 'dismissed'`),
+    ).where(sql`${table.status} = 'open'`),
   }),
 );
