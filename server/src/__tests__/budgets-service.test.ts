@@ -259,6 +259,56 @@ describe("budgetService", () => {
     expect(onAutoPaused).not.toHaveBeenCalled();
   });
 
+  it("re-fires onAutoPaused and creates a fresh incident when the prior one was already resolved (SHA-1904)", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    // dedupe filter keys on status='open', so a prior resolved incident must NOT
+    // block re-creation; the dedupe select should return empty here.
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 250 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{ id: "approval-2", companyId: "company-1", status: "pending" }]);
+    dbStub.queueInsert([{ id: "incident-new", companyId: "company-1", policyId: "policy-1", approvalId: "approval-2" }]);
+    dbStub.queueUpdate([]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const onAutoPaused = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope, onAutoPaused });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(onAutoPaused).toHaveBeenCalledTimes(1);
+    expect(onAutoPaused).toHaveBeenCalledWith(
+      { companyId: "company-1", scopeType: "agent", scopeId: "agent-1" },
+      expect.objectContaining({ incidentId: "incident-new" }),
+    );
+  });
+
   it("swallows onAutoPaused errors without breaking budget enforcement", async () => {
     const policy = {
       id: "policy-1",
