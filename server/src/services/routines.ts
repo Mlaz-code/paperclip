@@ -2380,12 +2380,40 @@ export function routineService(
         if (!claimed) continue;
 
         for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
-            routine: row.routine,
-            trigger: row.trigger,
-            source: "schedule",
-          });
-          triggered += 1;
+          try {
+            await dispatchRoutineRun({
+              routine: row.routine,
+              trigger: row.trigger,
+              source: "schedule",
+            });
+            triggered += 1;
+          } catch (error) {
+            // SHA-2057: nextRunAt was already advanced by the optimistic-lock
+            // UPDATE above. If dispatch throws (budget.blocked, agent paused,
+            // etc.) we must not lose the signal — record it on the trigger
+            // and keep going so sibling due triggers in this tick still fire.
+            const reason = error instanceof Error ? error.message : String(error);
+            logger.warn(
+              { err: error, routineId: row.routine.id, triggerId: row.trigger.id },
+              "dispatchRoutineRun failed during scheduled tick; trigger.lastResult will record the skip",
+            );
+            try {
+              await db
+                .update(routineTriggers)
+                .set({
+                  lastFiredAt: new Date(),
+                  lastResult: `Dispatch skipped: ${reason}`,
+                  updatedAt: new Date(),
+                })
+                .where(eq(routineTriggers.id, row.trigger.id));
+            } catch (updateErr) {
+              logger.error(
+                { err: updateErr, triggerId: row.trigger.id },
+                "failed to record lastResult after dispatchRoutineRun threw",
+              );
+            }
+            break;
+          }
         }
       }
 
