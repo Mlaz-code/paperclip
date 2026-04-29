@@ -823,4 +823,69 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(afterManual.nextRunAt?.toISOString()).toBe(claimedNextRunAt.toISOString());
     expect(afterManual.lastFiredAt).not.toBeNull();
   });
+
+  // SHA-2057: tickScheduledTriggers claims nextRunAt before calling
+  // dispatchRoutineRun. If dispatch throws (budget.blocked, agent paused, etc.)
+  // the fire was previously silently dropped: no routine_runs row, lastResult
+  // unchanged, nextRunAt already advanced. The only operator-visible signal
+  // must now be on the trigger itself.
+  it("records lastResult when dispatchRoutineRun throws mid-tick (SHA-2057)", async () => {
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("budget.blocked");
+      },
+    });
+    // skipIssueCreation routines call heartbeat.wakeup directly inside the
+    // dispatch transaction with no catch — a wakeup throw (budget.blocked,
+    // agent paused) rolls the whole transaction back and propagates out of
+    // dispatchRoutineRun, which is the path that silently dropped fires
+    // before this fix.
+    await db
+      .update(routines)
+      .set({ skipIssueCreation: true })
+      .where(eq(routines.id, routine.id));
+
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "every thirty",
+        cronExpression: "*/30 * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    // Back-date nextRunAt into the past so the trigger is due.
+    const duePast = new Date(Date.now() - 60_000);
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: duePast })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const now = new Date();
+    const { triggered } = await svc.tickScheduledTriggers(now);
+
+    // No successful fire happened, but the tick completed without bubbling.
+    expect(triggered).toBe(0);
+
+    const afterTick = await db
+      .select({
+        nextRunAt: routineTriggers.nextRunAt,
+        lastFiredAt: routineTriggers.lastFiredAt,
+        lastResult: routineTriggers.lastResult,
+      })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]!);
+
+    // nextRunAt was claimed forward (scheduler invariant from SHA-1845).
+    expect(afterTick.nextRunAt!.getTime()).toBeGreaterThan(now.getTime());
+    // Operator-visible skip signal lands on the trigger row, not only in
+    // agent_wakeup_requests.
+    expect(afterTick.lastFiredAt).not.toBeNull();
+    expect(afterTick.lastResult).toMatch(/^Dispatch skipped:/);
+    expect(afterTick.lastResult).toContain("budget.blocked");
+  });
+
 });
