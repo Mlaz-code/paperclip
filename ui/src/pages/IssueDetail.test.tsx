@@ -432,6 +432,7 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
     pausedAt: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
+    lastActivityAt: null,
     metadata: null,
     createdAt: new Date("2026-04-21T00:00:00.000Z"),
     updatedAt: new Date("2026-04-21T00:00:00.000Z"),
