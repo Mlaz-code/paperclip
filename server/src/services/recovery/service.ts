@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notExists, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -17,9 +17,11 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueLabels,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -307,6 +309,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // before we escalate to `blocked` for human review. The counter resets when
   // the assignee posts a comment (treated as proof of progress). See SHA-1866.
   const MAX_CONTINUATION_RETRIES = 3;
+
+  // Issues tagged with any of these labels are intentionally long-running and
+  // should NOT be woken by the stranded-assignment reconciler. The assignee
+  // owns cadence (e.g. scheduled day-N spot-checks) and continuous wake
+  // pressure just burns budget with no actionable work. See SHA-1879.
+  const RECONCILE_EXEMPT_LABELS = ["long-running-verification"] as const;
 
   async function countContinuationRetriesSinceLastAssigneeComment(
     companyId: string,
@@ -1611,6 +1619,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const exemptLabelSubquery = db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(
+        and(
+          eq(issueLabels.issueId, issues.id),
+          inArray(labels.name, RECONCILE_EXEMPT_LABELS as unknown as string[]),
+        ),
+      );
+
     const candidates = await db
       .select()
       .from(issues)
@@ -1619,6 +1638,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          notExists(exemptLabelSubquery),
         ),
       );
 
