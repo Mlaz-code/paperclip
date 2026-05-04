@@ -1571,12 +1571,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  // Error codes that represent transient failures (e.g. Claude subscription
+  // quota, anthropic 429/503). When the latest recovery run failed with one
+  // of these, we skip escalation to `blocked` and let the next heartbeat
+  // cycle retry once the window resets. `claude_transient_upstream` is the
+  // upstream-emitted code from the claude-local adapter's
+  // isClaudeTransientUpstreamError() classifier. See SHA-1786.
+  const TRANSIENT_ERROR_CODES = new Set([
+    "rate_limited",
+    "timeout",
+    "claude_transient_upstream",
+  ]);
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
     comment: string;
   }) {
+    // SHA-1786: skip escalation on transient failure codes. The issue will be
+    // picked up again on the next heartbeat cycle after the rate-limit /
+    // timeout window resets — false-blocking strands real work.
+    if (input.latestRun?.errorCode && TRANSIENT_ERROR_CODES.has(input.latestRun.errorCode)) {
+      return null;
+    }
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
