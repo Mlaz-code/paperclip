@@ -316,6 +316,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // pressure just burns budget with no actionable work. See SHA-1879.
   const RECONCILE_EXEMPT_LABELS = ["long-running-verification"] as const;
 
+  // Grace window after an agent-initiated pause's resumeAt before the reconciler
+  // stops treating the pause as an active execution path. Covers scheduler drift
+  // between the agent's ScheduleWakeup fire and the next heartbeat cycle.
+  // See SHA-1873.
+  const AGENT_PAUSE_GRACE_MS = 60_000;
+
   async function countContinuationRetriesSinceLastAssigneeComment(
     companyId: string,
     issueId: string,
@@ -375,7 +381,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, deferredWake, agentPause] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -400,9 +406,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // SHA-1873: agent-initiated ScheduleWakeup-style pause. Treat as active
+      // path only while resumeAt + grace > now() so expired pauses don't block
+      // legitimate stranded-work escalation.
+      db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_agent_pause"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            sql`(${agentWakeupRequests.payload} ->> 'resumeAt')::timestamptz + make_interval(secs => ${AGENT_PAUSE_GRACE_MS / 1000}) > now()`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || agentPause);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {

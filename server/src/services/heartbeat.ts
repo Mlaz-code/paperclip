@@ -7570,6 +7570,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     buildRunOutputSilence,
 
+    // SHA-1873: agent-initiated pause for an issue currently under execution.
+    // Records a `deferred_agent_pause` wakeup so the recovery reconciler can
+    // distinguish an intentional ScheduleWakeup-style pause from a process-
+    // lost run. The reconciler's hasActiveExecutionPath check honors this
+    // status while resumeAt + grace > now().
+    deferIssueExecution: async (input: {
+      companyId: string;
+      issueId: string;
+      agentId: string;
+      resumeAt: Date;
+      reason?: string | null;
+      requestedByActorType?: "user" | "agent" | "system" | null;
+      requestedByActorId?: string | null;
+    }) => {
+      const now = new Date();
+      const [row] = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_execution_deferred_by_agent",
+          payload: {
+            issueId: input.issueId,
+            resumeAt: input.resumeAt.toISOString(),
+            ...(input.reason ? { deferReason: input.reason } : {}),
+          },
+          status: "deferred_agent_pause",
+          requestedByActorType: input.requestedByActorType ?? null,
+          requestedByActorId: input.requestedByActorId ?? null,
+          requestedAt: now,
+        })
+        .returning();
+      return row;
+    },
+
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
       let checked = 0;
