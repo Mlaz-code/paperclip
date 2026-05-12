@@ -3744,7 +3744,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      // Predicate-gated heartbeats (opt-in per agent; default off). When set,
+      // the timer scheduler skips this agent's interval wakeup if the agent is
+      // currently idle — no running/queued run, no pending non-timer wakeup, no
+      // assigned actionable issue — until `idleIntervalMultiplier × intervalSec`
+      // has elapsed, at which point it forces one wakeup through as a periodic
+      // "is anything new?" sweep. On-demand wakeups (poller fires, issue
+      // assignments) go through a separate path and are unaffected — the agent
+      // still wakes immediately when there's real work.
+      skipIfIdle: asBoolean(heartbeat.skipIfIdle, false),
+      idleIntervalMultiplier: Math.max(1, asNumber(heartbeat.idleIntervalMultiplier, 6)),
     };
+  }
+
+  // Cheap, DB-only "does this agent have anything to act on right now?" check
+  // for predicate-gated heartbeats. Conservative: any uncertainty → false
+  // (don't skip the wakeup). No GH/network calls — must stay fast since
+  // tickTimers runs it for every skipIfIdle agent on every tick.
+  async function isAgentIdle(agentId: string): Promise<boolean> {
+    // Mid-work?
+    if ((await countRunningRunsForAgent(agentId)) > 0) return false;
+    // A queued run already waiting to start?
+    const [{ count: queued }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+    if (Number(queued ?? 0) > 0) return false;
+    // A pending non-timer wakeup (poller / on-demand / automation)?
+    const [{ count: wakeups }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "queued"),
+        notInArray(agentWakeupRequests.source, ["timer"]),
+      ));
+    if (Number(wakeups ?? 0) > 0) return false;
+    // An assigned, not-yet-closed issue?
+    const [{ count: assigned }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(
+        eq(issues.assigneeAgentId, agentId),
+        inArray(issues.status, ["todo", "backlog", "in_progress", "blocked", "in_review"]),
+      ));
+    if (Number(assigned ?? 0) > 0) return false;
+    return true;
   }
 
   function issueRunPriorityRank(priority: string | null | undefined) {
@@ -7622,6 +7667,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Predicate-gated heartbeat: if this agent opts into skipIfIdle and is
+        // currently idle, skip the timer wakeup — unless the stretched idle
+        // interval (idleIntervalMultiplier × intervalSec) has elapsed, in which
+        // case fall through and force one through as a periodic sweep. Since a
+        // skipped tick doesn't bump lastHeartbeatAt, elapsedMs keeps growing
+        // until the stretched interval is hit.
+        if (
+          policy.skipIfIdle &&
+          elapsedMs < policy.intervalSec * policy.idleIntervalMultiplier * 1000 &&
+          (await isAgentIdle(agent.id))
+        ) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
