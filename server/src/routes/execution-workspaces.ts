@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
+  isClosedExecutionWorkspaceStatus,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -588,6 +589,20 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
     } else {
+      // If the PATCH transitions the row out of a closed status, clear closedAt
+      // and cleanupReason so we don't leave the row in the contradictory
+      // (status=open, closedAt=stamped) state that fails-closed in
+      // isClosedIsolatedExecutionWorkspace. See SHA-2492.
+      if (
+        req.body.status !== undefined
+        && isClosedExecutionWorkspaceStatus(existing.status)
+        && !isClosedExecutionWorkspaceStatus(req.body.status)
+      ) {
+        patch.closedAt = null;
+        if (req.body.cleanupReason === undefined) {
+          patch.cleanupReason = null;
+        }
+      }
       const updatedWorkspace = await svc.update(id, patch);
       if (!updatedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });

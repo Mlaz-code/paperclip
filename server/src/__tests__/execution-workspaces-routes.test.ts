@@ -79,4 +79,92 @@ describe.sequential("execution workspace routes", () => {
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
+
+  it("clears closedAt and cleanupReason when PATCH transitions out of a closed status (SHA-2492)", async () => {
+    const archivedRow = {
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      mode: "isolated_workspace",
+      strategyType: "branch",
+      name: "Alpha",
+      status: "archived",
+      cwd: null,
+      repoUrl: null,
+      baseRef: null,
+      branchName: null,
+      providerType: "local_fs",
+      providerRef: null,
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date(),
+      openedAt: new Date(),
+      closedAt: new Date("2026-05-04T17:04:41.000Z"),
+      cleanupEligibleAt: null,
+      cleanupReason: "stale_7d_SHA-2221",
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(archivedRow);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...archivedRow,
+      ...patch,
+    }));
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "active" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledTimes(1);
+    const [, patchArg] = mockExecutionWorkspaceService.update.mock.calls[0];
+    expect(patchArg.status).toBe("active");
+    expect(patchArg.closedAt).toBeNull();
+    expect(patchArg.cleanupReason).toBeNull();
+  });
+
+  it("does not touch closedAt when PATCH does not change status", async () => {
+    const archivedRow = {
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      mode: "isolated_workspace",
+      strategyType: "branch",
+      name: "Alpha",
+      status: "archived",
+      cwd: null,
+      repoUrl: null,
+      baseRef: null,
+      branchName: null,
+      providerType: "local_fs",
+      providerRef: null,
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date(),
+      openedAt: new Date(),
+      closedAt: new Date("2026-05-04T17:04:41.000Z"),
+      cleanupEligibleAt: null,
+      cleanupReason: "stale_7d_SHA-2221",
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(archivedRow);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...archivedRow,
+      ...patch,
+    }));
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ name: "Beta" });
+
+    expect(res.status).toBe(200);
+    const [, patchArg] = mockExecutionWorkspaceService.update.mock.calls[0];
+    expect("closedAt" in patchArg).toBe(false);
+    expect("cleanupReason" in patchArg).toBe(false);
+  });
 });
