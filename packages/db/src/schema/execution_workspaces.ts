@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  check,
   index,
   jsonb,
   pgTable,
@@ -63,6 +65,11 @@ export const executionWorkspaces = pgTable(
     companyBranchIdx: index("execution_workspaces_company_branch_idx").on(
       table.companyId,
       table.branchName,
+    ),
+    // closed_at MUST pair with a closed status. See SHA-2492.
+    closedStateConsistency: check(
+      "execution_workspaces_closed_state_consistency",
+      sql`${table.closedAt} IS NULL OR ${table.status} IN ('archived', 'cleanup_failed')`,
     ),
   }),
 );
