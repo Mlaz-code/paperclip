@@ -21,6 +21,13 @@ import {
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
+
+// Origin kinds that are system-managed; their long-running / never-closes status is expected,
+// not a stall signal. Exclude them from productivity-review candidate queries entirely.
+const PRODUCTIVITY_REVIEW_EXCLUDED_ORIGIN_KINDS = [
+  ...Object.values(RECOVERY_ORIGIN_KINDS),
+  "routine_execution",
+] as const;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
@@ -775,7 +782,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
-          sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          notInArray(issues.originKind, [...PRODUCTIVITY_REVIEW_EXCLUDED_ORIGIN_KINDS]),
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
