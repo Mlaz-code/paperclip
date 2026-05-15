@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notExists, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -7,7 +7,9 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projects,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -28,6 +30,13 @@ const PRODUCTIVITY_REVIEW_EXCLUDED_ORIGIN_KINDS = [
   ...Object.values(RECOVERY_ORIGIN_KINDS),
   "routine_execution",
 ] as const;
+
+// Labels whose presence parks an issue from a productivity-review perspective:
+// the long-running status is expected (e.g. waiting on an external event such as
+// a tournament window). Mirrors the recovery-side RECONCILE_EXEMPT_LABELS gate.
+// See SHA-2913.
+const PRODUCTIVITY_REVIEW_EXEMPT_LABELS = ["long-running-verification"] as const;
+
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
@@ -772,6 +781,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const exemptLabelSubquery = db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(
+        and(
+          eq(issueLabels.issueId, issues.id),
+          inArray(labels.name, PRODUCTIVITY_REVIEW_EXEMPT_LABELS as unknown as string[]),
+        ),
+      );
     const candidates = await db
       .select()
       .from(issues)
@@ -783,6 +802,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
           notInArray(issues.originKind, [...PRODUCTIVITY_REVIEW_EXCLUDED_ORIGIN_KINDS]),
+          notExists(exemptLabelSubquery),
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
