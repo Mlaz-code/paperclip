@@ -8,7 +8,9 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -328,6 +330,39 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     expect(result.created).toBe(0);
     expect(reviews).toHaveLength(1);
+  });
+
+  it("skips issues labeled long-running-verification even when they trip a productivity trigger", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId: seeded.companyId,
+      name: "long-running-verification",
+      color: "#888888",
+    });
+    await db.insert(issueLabels).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      labelId,
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.scanned).toBe(0);
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("skips routine_execution issues even when they trip the long-active threshold", async () => {
