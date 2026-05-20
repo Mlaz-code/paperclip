@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -15,6 +15,7 @@ import type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { isClosedExecutionWorkspaceStatus } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -735,9 +736,40 @@ export function executionWorkspaceService(db: Db) {
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
+      // SHA-2492 invariant: if this update transitions the row to an open
+      // status, atomically null closedAt and cleanupReason so we never leave
+      // the row in the contradictory (status=open, closedAt=stamped) shape
+      // that fails-closed in isClosedIsolatedExecutionWorkspace.
+      //
+      // Implemented as SQL CASE keyed on executionWorkspaces.status (read
+      // inside the same UPDATE), so the decision uses the row's pre-update
+      // status atomically — TOCTOU-safe against a racing archive PATCH.
+      // Lives at the service so non-route callers (heartbeat reuse path,
+      // fixtures, future cron jobs) get the same protection. Caller-supplied
+      // closedAt/cleanupReason on a true reopen are intentionally dropped
+      // (cleanupReason describes a closure, retaining it on a reopen is the
+      // same incoherent shape we're guarding against). On an open→open update
+      // the patch's values are honored — only the reopen path overrides.
+      // Forward-only fix: pre-existing contradictory rows (status='idle' /
+      // closedAt stamped — ~1037 on prod from manual cleanup recipes) are
+      // not repaired by this update branch and need the companion backfill.
+      const setClause: Record<string, unknown> = { ...patch, updatedAt: new Date() };
+      // patch.status is typed `string` (drizzle infers from the text column);
+      // the helper takes the narrower union — safe to cast since schema/route
+      // validation has already constrained the value upstream.
+      if (patch.status !== undefined && !isClosedExecutionWorkspaceStatus(patch.status as ExecutionWorkspace["status"])) {
+        const closedAtElse = patch.closedAt !== undefined
+          ? sql`${patch.closedAt}`
+          : sql`${executionWorkspaces.closedAt}`;
+        const cleanupReasonElse = patch.cleanupReason !== undefined
+          ? sql`${patch.cleanupReason}`
+          : sql`${executionWorkspaces.cleanupReason}`;
+        setClause.closedAt = sql`CASE WHEN ${executionWorkspaces.status} IN ('archived', 'cleanup_failed') THEN NULL ELSE ${closedAtElse} END`;
+        setClause.cleanupReason = sql`CASE WHEN ${executionWorkspaces.status} IN ('archived', 'cleanup_failed') THEN NULL ELSE ${cleanupReasonElse} END`;
+      }
       const row = await db
         .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
+        .set(setClause)
         .where(eq(executionWorkspaces.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);

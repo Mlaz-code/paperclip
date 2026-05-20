@@ -589,20 +589,6 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
     } else {
-      // If the PATCH transitions the row out of a closed status, clear closedAt
-      // and cleanupReason so we don't leave the row in the contradictory
-      // (status=open, closedAt=stamped) state that fails-closed in
-      // isClosedIsolatedExecutionWorkspace. See SHA-2492.
-      if (
-        req.body.status !== undefined
-        && isClosedExecutionWorkspaceStatus(existing.status)
-        && !isClosedExecutionWorkspaceStatus(req.body.status)
-      ) {
-        patch.closedAt = null;
-        if (req.body.cleanupReason === undefined) {
-          patch.cleanupReason = null;
-        }
-      }
       const updatedWorkspace = await svc.update(id, patch);
       if (!updatedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });
@@ -610,6 +596,13 @@ export function executionWorkspaceRoutes(db: Db) {
       }
       workspace = updatedWorkspace;
     }
+    // SHA-2492: the service's update() implicitly nulls closedAt + cleanupReason
+    // when a row transitions out of a closed status — surface that in the
+    // activity log so forensics see the implicit writes, not just changedKeys.
+    const reopenedFromClosed =
+      req.body.status !== undefined
+      && isClosedExecutionWorkspaceStatus(existing.status)
+      && !isClosedExecutionWorkspaceStatus(req.body.status);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
@@ -623,6 +616,13 @@ export function executionWorkspaceRoutes(db: Db) {
       details: {
         changedKeys: Object.keys(req.body).sort(),
         ...(cleanupWarnings.length > 0 ? { cleanupWarnings } : {}),
+        ...(reopenedFromClosed
+          ? {
+              reopenedFromClosedStatus: existing.status,
+              clearedClosedAt: true,
+              clearedCleanupReason: true,
+            }
+          : {}),
       },
     });
     res.json(workspace);

@@ -80,8 +80,8 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
 
-  it("clears closedAt and cleanupReason when PATCH transitions out of a closed status (SHA-2492)", async () => {
-    const archivedRow = {
+  function buildArchivedRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
       id: "workspace-1",
       companyId: "company-1",
       projectId: "project-1",
@@ -106,11 +106,20 @@ describe.sequential("execution workspace routes", () => {
       metadata: null,
       createdAt: new Date(),
       updatedAt: new Date(),
+      ...overrides,
     };
+  }
+
+  it("delegates the patch verbatim on reopen — clearing is the service's job (SHA-2492)", async () => {
+    const archivedRow = buildArchivedRow();
     mockExecutionWorkspaceService.getById.mockResolvedValue(archivedRow);
     mockExecutionWorkspaceService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...archivedRow,
       ...patch,
+      // Mirror what the real service does so the response shape matches what
+      // a caller would see; the route is not expected to inject these nulls.
+      closedAt: null,
+      cleanupReason: null,
     }));
 
     const res = await request(createApp())
@@ -120,38 +129,42 @@ describe.sequential("execution workspace routes", () => {
     expect(res.status).toBe(200);
     expect(mockExecutionWorkspaceService.update).toHaveBeenCalledTimes(1);
     const [, patchArg] = mockExecutionWorkspaceService.update.mock.calls[0];
-    expect(patchArg.status).toBe("active");
-    expect(patchArg.closedAt).toBeNull();
-    expect(patchArg.cleanupReason).toBeNull();
+    // Route forwards req.body to the service; it does NOT inject closedAt /
+    // cleanupReason clearings — the service handles that invariant atomically.
+    expect(patchArg).toEqual({ status: "active" });
+    // Response reflects the service-level clearing.
+    expect(res.body.closedAt).toBeNull();
+    expect(res.body.cleanupReason).toBeNull();
   });
 
-  it("does not touch closedAt when PATCH does not change status", async () => {
-    const archivedRow = {
-      id: "workspace-1",
-      companyId: "company-1",
-      projectId: "project-1",
-      projectWorkspaceId: null,
-      sourceIssueId: null,
-      mode: "isolated_workspace",
-      strategyType: "branch",
-      name: "Alpha",
-      status: "archived",
-      cwd: null,
-      repoUrl: null,
-      baseRef: null,
-      branchName: null,
-      providerType: "local_fs",
-      providerRef: null,
-      derivedFromExecutionWorkspaceId: null,
-      lastUsedAt: new Date(),
-      openedAt: new Date(),
-      closedAt: new Date("2026-05-04T17:04:41.000Z"),
-      cleanupEligibleAt: null,
-      cleanupReason: "stale_7d_SHA-2221",
-      metadata: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+  it("records reopen-from-closed in the activity log (SHA-2492)", async () => {
+    const archivedRow = buildArchivedRow();
+    mockExecutionWorkspaceService.getById.mockResolvedValue(archivedRow);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...archivedRow,
+      ...patch,
+      closedAt: null,
+      cleanupReason: null,
+    }));
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "idle" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    const [, logCall] = mockLogActivity.mock.calls[0];
+    expect(logCall.action).toBe("execution_workspace.updated");
+    expect(logCall.details).toMatchObject({
+      changedKeys: ["status"],
+      reopenedFromClosedStatus: "archived",
+      clearedClosedAt: true,
+      clearedCleanupReason: true,
+    });
+  });
+
+  it("does not flag reopen in the activity log when PATCH does not change status", async () => {
+    const archivedRow = buildArchivedRow();
     mockExecutionWorkspaceService.getById.mockResolvedValue(archivedRow);
     mockExecutionWorkspaceService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...archivedRow,
@@ -164,7 +177,10 @@ describe.sequential("execution workspace routes", () => {
 
     expect(res.status).toBe(200);
     const [, patchArg] = mockExecutionWorkspaceService.update.mock.calls[0];
-    expect("closedAt" in patchArg).toBe(false);
-    expect("cleanupReason" in patchArg).toBe(false);
+    expect(patchArg).toEqual({ name: "Beta" });
+    const [, logCall] = mockLogActivity.mock.calls[0];
+    expect("reopenedFromClosedStatus" in logCall.details).toBe(false);
+    expect("clearedClosedAt" in logCall.details).toBe(false);
   });
+
 });
