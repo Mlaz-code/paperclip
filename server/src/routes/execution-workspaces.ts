@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
+  isClosedExecutionWorkspaceStatus,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -595,6 +596,13 @@ export function executionWorkspaceRoutes(db: Db) {
       }
       workspace = updatedWorkspace;
     }
+    // SHA-2492: the service's update() implicitly nulls closedAt + cleanupReason
+    // when a row transitions out of a closed status — surface that in the
+    // activity log so forensics see the implicit writes, not just changedKeys.
+    const reopenedFromClosed =
+      req.body.status !== undefined
+      && isClosedExecutionWorkspaceStatus(existing.status)
+      && !isClosedExecutionWorkspaceStatus(req.body.status);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
@@ -608,6 +616,13 @@ export function executionWorkspaceRoutes(db: Db) {
       details: {
         changedKeys: Object.keys(req.body).sort(),
         ...(cleanupWarnings.length > 0 ? { cleanupWarnings } : {}),
+        ...(reopenedFromClosed
+          ? {
+              reopenedFromClosedStatus: existing.status,
+              clearedClosedAt: true,
+              clearedCleanupReason: true,
+            }
+          : {}),
       },
     });
     res.json(workspace);

@@ -564,7 +564,9 @@ export {
 } from "./types/instance.js";
 
 export {
+  CLOSED_EXECUTION_WORKSPACE_STATUSES,
   getClosedIsolatedExecutionWorkspaceMessage,
+  isClosedExecutionWorkspaceStatus,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";
 

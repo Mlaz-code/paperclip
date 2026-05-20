@@ -445,3 +445,144 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   }, 20_000);
 });
+
+describeEmbeddedPostgres("executionWorkspaceService.update (SHA-2492 reopen invariant)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof executionWorkspaceService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-update-");
+    db = createDb(tempDb.connectionString);
+    svc = executionWorkspaceService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedClosedRow(opts: { status: "archived" | "cleanup_failed"; cleanupReason?: string | null }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Alpha",
+      status: opts.status,
+      providerType: "local_fs",
+      closedAt: new Date("2026-05-04T17:04:41.000Z"),
+      cleanupReason: opts.cleanupReason ?? "stale_7d_SHA-2221",
+    });
+    return workspaceId;
+  }
+
+  async function readRow(id: string) {
+    const row = await svc.getById(id);
+    return row;
+  }
+
+  it("clears closedAt and cleanupReason on archived → active", async () => {
+    const id = await seedClosedRow({ status: "archived" });
+    const updated = await svc.update(id, { status: "active" });
+    expect(updated?.status).toBe("active");
+    expect(updated?.closedAt).toBeNull();
+    expect(updated?.cleanupReason).toBeNull();
+  });
+
+  it("clears closedAt and cleanupReason on cleanup_failed → idle", async () => {
+    const id = await seedClosedRow({ status: "cleanup_failed", cleanupReason: "teardown.sh exit 1" });
+    const updated = await svc.update(id, { status: "idle" });
+    expect(updated?.status).toBe("idle");
+    expect(updated?.closedAt).toBeNull();
+    expect(updated?.cleanupReason).toBeNull();
+  });
+
+  it("clears closedAt and cleanupReason on archived → idle (the 2026-05-08 incident shape)", async () => {
+    const id = await seedClosedRow({ status: "archived" });
+    const updated = await svc.update(id, { status: "idle" });
+    expect(updated?.status).toBe("idle");
+    expect(updated?.closedAt).toBeNull();
+    expect(updated?.cleanupReason).toBeNull();
+  });
+
+  it("overrides caller-supplied cleanupReason on reopen (no carve-out)", async () => {
+    const id = await seedClosedRow({ status: "archived" });
+    const updated = await svc.update(id, { status: "active", cleanupReason: "operator note" });
+    expect(updated?.status).toBe("active");
+    expect(updated?.closedAt).toBeNull();
+    // cleanupReason describes a closure — on a reopen it would re-introduce
+    // the contradictory shape, so the service drops the caller's value.
+    expect(updated?.cleanupReason).toBeNull();
+  });
+
+  it("leaves closedAt and cleanupReason untouched on a closed → closed transition", async () => {
+    const id = await seedClosedRow({ status: "cleanup_failed", cleanupReason: "teardown.sh exit 1" });
+    const updated = await svc.update(id, { status: "archived" });
+    expect(updated?.status).toBe("archived");
+    expect(updated?.closedAt).not.toBeNull();
+    expect(updated?.cleanupReason).toBe("teardown.sh exit 1");
+  });
+
+  it("preserves caller-supplied cleanupReason on an open → open update (no reopen happening)", async () => {
+    const id = await seedClosedRow({ status: "archived" });
+    // First reopen to active (clears).
+    await svc.update(id, { status: "active" });
+    // Now an open → open update with a caller-supplied cleanupReason.
+    const updated = await svc.update(id, { status: "active", cleanupReason: "operator note" });
+    expect(updated?.status).toBe("active");
+    expect(updated?.cleanupReason).toBe("operator note");
+    expect(updated?.closedAt).toBeNull();
+  });
+
+  it("clears closedAt when called directly with status='active' (heartbeat reuse path regression)", async () => {
+    // Mirrors the heartbeat reuse call shape (server/src/services/heartbeat.ts ~L5073):
+    //   executionWorkspacesSvc.update(existing.id, { status: 'active', lastUsedAt, ... })
+    // Before SHA-2492, this path bypassed the route guard and produced
+    // (status='active', closedAt=stamped). Guard now lives in the service.
+    const id = await seedClosedRow({ status: "archived" });
+    const updated = await svc.update(id, {
+      status: "active",
+      lastUsedAt: new Date(),
+      providerType: "local_fs",
+    });
+    expect(updated?.status).toBe("active");
+    expect(updated?.closedAt).toBeNull();
+    expect(updated?.cleanupReason).toBeNull();
+
+    const reread = await readRow(id);
+    expect(reread?.closedAt).toBeNull();
+  });
+
+  it("does not touch closedAt when patch omits status", async () => {
+    const id = await seedClosedRow({ status: "archived" });
+    const before = await svc.getById(id);
+    const updated = await svc.update(id, { name: "Beta" });
+    expect(updated?.name).toBe("Beta");
+    expect(updated?.status).toBe("archived");
+    expect(updated?.closedAt?.toISOString()).toBe(before?.closedAt?.toISOString());
+    expect(updated?.cleanupReason).toBe(before?.cleanupReason);
+  });
+});
