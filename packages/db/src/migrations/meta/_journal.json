@@ -631,6 +631,13 @@
       "when": 1779129600000,
       "tag": "0089_cloud_upstreams",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1778800000000,
+      "tag": "0077_workspace_closed_state_consistency",
+      "breakpoints": true
     }
   ]
 }
