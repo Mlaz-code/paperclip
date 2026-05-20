@@ -540,6 +540,13 @@
       "when": 1776541198667,
       "tag": "0076_budget_incidents_dedupe_open_only",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1778800000000,
+      "tag": "0077_workspace_closed_state_consistency",
+      "breakpoints": true
     }
   ]
 }
