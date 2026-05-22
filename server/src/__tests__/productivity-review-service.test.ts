@@ -54,6 +54,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    description?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -97,6 +98,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       id: issueId,
       companyId,
       title: "Implement data import",
+      description: opts?.description ?? null,
       status: opts?.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: coderId,
@@ -219,8 +221,54 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.created).toBe(1);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+    expect(review?.description).toContain("since active start");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  function thermometerMeta(lastFiredAt: Date, classKey = "test:probe", fireCount = 7): string {
+    return [
+      `<!-- thermometer-meta`,
+      `class_key: ${classKey}`,
+      `detector: test_detector`,
+      `detector_version: 1`,
+      `created_at: ${new Date(lastFiredAt.getTime() - 60 * 24 * 60 * 60 * 1000).toISOString()}`,
+      `last_fired_at: ${lastFiredAt.toISOString()}`,
+      `fire_count: ${fireCount}`,
+      `-->`,
+    ].join("\n");
+  }
+
+  it("does not flag a 60-day-old thermometer umbrella with a fresh last_fired_at", async () => {
+    const now = new Date("2026-05-13T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000),
+      description: `[thermometer:test:probe] umbrella\n\n${thermometerMeta(new Date(now.getTime() - 10 * 60 * 1000))}`,
+    });
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(0);
+  });
+
+  it("flags a 60-day-old thermometer umbrella whose last_fired_at is 30d stale", async () => {
+    const now = new Date("2026-05-13T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000),
+      description: `[thermometer:test:probe] umbrella\n\n${thermometerMeta(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000))}`,
+    });
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+    expect(review?.description).toContain("since last_fired_at");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
