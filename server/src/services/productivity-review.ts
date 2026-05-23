@@ -99,6 +99,26 @@ function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
 }
 
+const THERMOMETER_META_RE = /<!--\s*thermometer-meta\s+([\s\S]*?)\s*-->/i;
+
+// Parses the thermometer meta block from an issue description and returns the
+// `last_fired_at` Date, or null if the block is absent or unparseable. Source of
+// truth for chronic-umbrella recency per SHA-2594 contract v1.1 — Productivity
+// Reviewer (SHA-2598) anchors long-active duration on this instead of startedAt
+// for thermometer umbrellas so a 60-day-old umbrella firing every 10 minutes
+// does not read as stale.
+function parseThermometerLastFiredAt(description: string | null | undefined): Date | null {
+  if (!description) return null;
+  const match = THERMOMETER_META_RE.exec(description);
+  if (!match) return null;
+  const inner = match[1];
+  const fieldRe = /last_fired_at\s*[:=]\s*"?([^"\s]+)"?/i;
+  const fieldMatch = fieldRe.exec(inner);
+  if (!fieldMatch) return null;
+  const parsed = new Date(fieldMatch[1]);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
 function issueRunScopeSql(issueId: string) {
   return sql`(
     ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
@@ -390,8 +410,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
     const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
-      ? Math.max(0, now.getTime() - activeStartedAt.getTime())
+    const thermometerLastFiredAt = parseThermometerLastFiredAt(sourceIssue.description);
+    const longActiveAnchor = thermometerLastFiredAt ?? activeStartedAt;
+    const elapsedMs = sourceIssue.status === "in_progress" && longActiveAnchor
+      ? Math.max(0, now.getTime() - longActiveAnchor.getTime())
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
@@ -406,7 +428,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
-    if (longActive) triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)}`);
+    if (longActive) {
+      const anchor = thermometerLastFiredAt ? "since last_fired_at" : "since active start";
+      triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)} (${anchor})`);
+    }
     if (highChurn) {
       triggerReasons.push(
         `${runCountLastHour} runs/${assigneeRunCommentCountLastHour} assignee-run comments in 1h; ${runCountLastSixHours} runs/${assigneeRunCommentCountLastSixHours} assignee-run comments in 6h`,
