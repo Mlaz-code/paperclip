@@ -385,7 +385,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
 
     expect(result.created).toBe(0);
-    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    // Excluded at the candidate-query WHERE clause (productivity-review.ts:709),
+    // so the issue never enters the in-loop skip counter — scanned is the right check.
+    expect(result.scanned).toBe(0);
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
