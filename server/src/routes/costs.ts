@@ -17,7 +17,6 @@ import {
   agentService,
   issueService,
   heartbeatService,
-  issueService,
   logActivity,
 } from "../services/index.js";
 import { buildBudgetAutoPauseIssueHook } from "../services/budget-auto-pause-alert.js";
@@ -64,7 +63,6 @@ export function costRoutes(
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
   const agents = agentService(db);
-  const issues = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
