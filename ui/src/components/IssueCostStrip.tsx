@@ -23,7 +23,7 @@ interface IssueCostStripProps {
 export function IssueCostStrip({ companyId, issueId, issueIdentifier }: IssueCostStripProps) {
   const key = issueIdentifier ?? issueId;
   const { data, isLoading, isError } = useQuery<IssueCostSummary>({
-    queryKey: queryKeys.issues.costSummary(companyId, key),
+    queryKey: queryKeys.issues.issueCostStrip(companyId, key),
     queryFn: () => costsApi.issueSummary(companyId, key),
     staleTime: 30_000,
   });
