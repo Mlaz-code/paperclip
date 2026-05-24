@@ -559,7 +559,12 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
-      return activeInvocations.size > 0 ? { invalidInvocationScope: true } : {};
+      // Grandfather legacy plugins (e.g. aperture 0.4.4 bundles plugin-sdk
+      // 2026.428.0, which predates `paperclipInvocationId`). Without this,
+      // their event-time callbacks would be rejected whenever an onEvent
+      // invocation is in-flight. Acceptable in this fork's single-tenant
+      // deployment; multi-tenant hosts should keep upstream's stricter rule.
+      return {};
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
