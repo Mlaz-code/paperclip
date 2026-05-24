@@ -1,6 +1,6 @@
 {
-  "id": "c0b75067-8c34-4a72-98a4-04e6e1902646",
-  "prevId": "1602b8f3-7cd7-4e45-bcbf-0f7eb8b7b7ff",
+  "id": "58b07646-6b04-4945-b6d2-e3409d238235",
+  "prevId": "c13b1dd5-1860-4d0b-aeb2-5bb197766983",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1218,12 +1218,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "last_activity_at": {
-          "name": "last_activity_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -2384,7 +2378,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"budget_incidents\".\"status\" = 'open'",
+          "where": "\"budget_incidents\".\"status\" <> 'dismissed'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6480,6 +6474,37 @@
           "primaryKey": false,
           "notNull": false
         },
+        "liveness_state": {
+          "name": "liveness_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "liveness_reason": {
+          "name": "liveness_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "continuation_attempt": {
+          "name": "continuation_attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_useful_action_at": {
+          "name": "last_useful_action_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_action": {
+          "name": "next_action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "context_snapshot": {
           "name": "context_snapshot",
           "type": "jsonb",
@@ -6519,6 +6544,33 @@
             },
             {
               "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_liveness_idx": {
+          "name": "heartbeat_runs_company_liveness_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "liveness_state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -12507,13 +12559,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'skip_missed'"
-        },
-        "skip_issue_creation": {
-          "name": "skip_issue_creation",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "variables": {
           "name": "variables",
