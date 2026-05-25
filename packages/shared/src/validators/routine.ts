@@ -58,6 +58,8 @@ export const createRoutineSchema = z.object({
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
+  expectedMaxQueueDepth: z.number().int().min(0).optional().nullable(),
+  costBudgetMonthlyCents: z.number().int().min(0).optional().nullable(),
   variables: z.array(routineVariableSchema).optional().default([]),
 });
 
