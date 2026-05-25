@@ -34,8 +34,25 @@ export const issues = pgTable(
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
+    /**
+     * @deprecated SHA-3601 Phase 1 — superseded by `lockRunId`. Dual-written
+     * by the `issues_sync_lock_columns_trg` trigger during the canary period;
+     * will be dropped in a follow-up migration after Phase 3 lands.
+     */
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    /**
+     * @deprecated SHA-3601 Phase 1 — superseded by `lockRunId`. Dual-written
+     * by the `issues_sync_lock_columns_trg` trigger during the canary period;
+     * will be dropped in a follow-up migration after Phase 3 lands.
+     */
     executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // SHA-3601 single-owner CAS lock. Source of truth for issue ownership.
+    // During the canary period the BEFORE INSERT/UPDATE trigger keeps these
+    // in sync with assignee_agent_id + COALESCE(execution_run_id,
+    // checkout_run_id), so callers can read either surface coherently.
+    lockAgentId: uuid("lock_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    lockRunId: uuid("lock_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    lockAt: timestamp("lock_at", { withTimezone: true }),
     executionAgentNameKey: text("execution_agent_name_key"),
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
@@ -86,6 +103,9 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
+    lockIdx: index("issues_lock_idx")
+      .on(table.lockAgentId, table.lockRunId)
+      .where(sql`${table.lockRunId} is not null`),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),

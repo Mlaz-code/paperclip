@@ -23,6 +23,7 @@ import {
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
+  claimIssueSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -4574,6 +4575,97 @@ export function issueRoutes(
           contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+    }
+
+    res.json(updated);
+  });
+
+  // SHA-3601 Phase 2: single-owner CAS lock claim. Runs alongside /checkout
+  // during the canary window; callers migrate in Phase 3. The lock column
+  // CAS is the durable fix for the SHA-3081/3241/3359/3413/3419/3519 burn
+  // class — comments don't need the lock, only state-changing writes do.
+  router.post("/issues/:id/claim", validate(claimIssueSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (issue.projectId) {
+      const project = await projectsSvc.getById(issue.projectId);
+      if (project?.pausedAt) {
+        res.status(409).json({
+          error:
+            project.pauseReason === "budget"
+              ? "Project is paused because its budget hard-stop was reached"
+              : "Project is paused",
+        });
+        return;
+      }
+    }
+
+    if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
+      res.status(403).json({ error: "Agent can only claim as itself" });
+      return;
+    }
+
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: req.body.agentId,
+        assigneeUserId: null,
+      });
+    }
+
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const updated = await svc.claim(
+      id,
+      req.body.agentId,
+      req.body.runId,
+      req.body.expectedStatuses,
+    );
+    const actor = getActorInfo(req);
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.claimed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { agentId: req.body.agentId, runId: req.body.runId },
+    });
+
+    if (
+      shouldWakeAssigneeOnCheckout({
+        actorType: req.actor.type,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+        checkoutAgentId: req.body.agentId,
+        checkoutRunId: req.body.runId,
+      })
+    ) {
+      void heartbeat
+        .wakeup(req.body.agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_claimed",
+          payload: { issueId: issue.id, mutation: "claim" },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, source: "issue.claim" },
+        })
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue claim"));
     }
 
     res.json(updated);

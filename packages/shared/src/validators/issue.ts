@@ -440,6 +440,25 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+// SHA-3601 Phase 2: single-owner CAS lock claim.
+// `expectedStatuses` is optional here (unlike checkout) — /claim is about
+// acquiring the lock, not about gating on status. Callers that care about
+// status can still pass it for an additional WHERE constraint.
+export const claimIssueSchema = z.object({
+  agentId: z.string().uuid(),
+  runId: z.string().uuid(),
+  expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty().optional(),
+});
+
+export type ClaimIssue = z.infer<typeof claimIssueSchema>;
+
+export const releaseIssueSchema = z.object({
+  agentId: z.string().uuid().optional(),
+  runId: z.string().uuid().optional(),
+}).optional();
+
+export type ReleaseIssue = z.infer<typeof releaseIssueSchema>;
+
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 

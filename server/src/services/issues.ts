@@ -1614,6 +1614,9 @@ const issueListSelect = {
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
+  lockAgentId: issues.lockAgentId,
+  lockRunId: issues.lockRunId,
+  lockAt: issues.lockAt,
   executionAgentNameKey: issues.executionAgentNameKey,
   executionLockedAt: issues.executionLockedAt,
   createdByAgentId: issues.createdByAgentId,
@@ -4821,6 +4824,134 @@ export function issueService(db: Db) {
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
         executionRunId: current.executionRunId,
+      });
+    },
+
+    // SHA-3601 Phase 2: single-owner CAS lock claim.
+    //
+    // Atomic compare-and-swap on lock_agent_id + lock_run_id. Idempotent: a
+    // repeat claim from the same {agentId, runId} returns 200 with the
+    // existing row. Lock held by a different run returns 409. Status is
+    // optionally constrained via `expectedStatuses`.
+    //
+    // Writes go to the legacy {assignee_agent_id, checkout_run_id,
+    // execution_run_id} columns; the trigger then re-derives lock_*. The CAS
+    // WHERE clause keys on lock_* so concurrent writers contend on the new
+    // surface. Phase 1+2 keep /checkout in place untouched — callers
+    // continue to use it; /claim is wired up alongside for Phase 3 to
+    // migrate to.
+    claim: async (
+      id: string,
+      agentId: string,
+      runId: string,
+      expectedStatuses?: readonly string[],
+    ) => {
+      const runExists = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      if (!runExists) {
+        throw conflict("Claim run no longer exists; agent should request a fresh heartbeat");
+      }
+
+      const issueCompany = await db
+        .select({ companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!issueCompany) throw notFound("Issue not found");
+      await assertAssignableAgent(issueCompany.companyId, agentId);
+
+      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
+      if (
+        activePauseHold &&
+        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, runId, activePauseHold))
+      ) {
+        throw conflict("Issue claim blocked by active subtree pause hold", {
+          issueId: id,
+          holdId: activePauseHold.holdId,
+          rootIssueId: activePauseHold.rootIssueId,
+          mode: activePauseHold.mode,
+          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+        });
+      }
+
+      await clearExecutionRunIfTerminal(id);
+
+      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
+      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+      if (unresolvedBlockerIssueIds.length > 0) {
+        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+      }
+
+      const now = new Date();
+      const lockMatch = or(
+        isNull(issues.lockRunId),
+        and(eq(issues.lockAgentId, agentId), eq(issues.lockRunId, runId)),
+      );
+      const whereClauses = [eq(issues.id, id), lockMatch];
+      if (expectedStatuses && expectedStatuses.length > 0) {
+        whereClauses.push(inArray(issues.status, expectedStatuses as string[]));
+      }
+
+      const updated = await db
+        .update(issues)
+        .set({
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          checkoutRunId: runId,
+          executionRunId: runId,
+          status: "in_progress",
+          startedAt: sql`COALESCE(${issues.startedAt}, ${now})`,
+          updatedAt: now,
+        })
+        .where(and(...whereClauses))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        const [enriched] = await withIssueLabels(db, [updated]);
+        return enriched;
+      }
+
+      const current = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          lockAgentId: issues.lockAgentId,
+          lockRunId: issues.lockRunId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Issue not found");
+
+      // Idempotent: same {agent, run} already holds the lock. Return the
+      // current row without a state change. Status filter (if any) must
+      // also still match.
+      if (
+        current.lockAgentId === agentId &&
+        current.lockRunId === runId &&
+        (!expectedStatuses || expectedStatuses.includes(current.status))
+      ) {
+        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("Issue not found");
+        const [enriched] = await withIssueLabels(db, [row]);
+        return enriched;
+      }
+
+      throw conflict("Issue claim conflict", {
+        issueId: current.id,
+        status: current.status,
+        lockAgentId: current.lockAgentId,
+        lockRunId: current.lockRunId,
+        assigneeAgentId: current.assigneeAgentId,
       });
     },
 
