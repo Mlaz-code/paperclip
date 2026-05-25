@@ -39,6 +39,7 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/invite-join-manager.test.ts",
   "server/src/__tests__/invite-onboarding-text.test.ts",
   "server/src/__tests__/issues-checkout-wakeup.test.ts",
+  "server/src/__tests__/issues-claim-lock.test.ts",
   "server/src/__tests__/issues-service.test.ts",
   "server/src/__tests__/opencode-local-adapter-environment.test.ts",
   "server/src/__tests__/project-routes-env.test.ts",
