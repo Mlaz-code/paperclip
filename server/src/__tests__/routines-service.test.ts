@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -1218,6 +1218,93 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(afterTick.lastFiredAt).not.toBeNull();
     expect(afterTick.lastResult).toMatch(/^Dispatch skipped:/);
     expect(afterTick.lastResult).toContain("budget.blocked");
+  });
+
+  it("uses the freshly-locked routine assignee when the snapshot is stale (SHA-3629)", async () => {
+    const { companyId, agentId: agentA, routine, svc } = await seedFixture();
+
+    // A second agent in the same company — the "new" assignee that
+    // the concurrent transaction promotes the routine to mid-dispatch.
+    const agentB = randomUUID();
+    await db.insert(agents).values({
+      id: agentB,
+      companyId,
+      name: "AgentB",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // A schedule trigger we can backdate so tickScheduledTriggers picks it up.
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "every minute",
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const duePast = new Date(Date.now() - 60_000);
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: duePast })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    // The race we want to reproduce:
+    //   T0  routine.assignee = A
+    //   T1  holdingTx: BEGIN; SELECT ... FOR UPDATE; UPDATE assignee = B; (not yet committed)
+    //   T2  tick: SELECT routines JOIN triggers — read-committed sees assignee = A
+    //   T3  tick: dispatchRoutineRun({ routine: { assignee: A }, ... })
+    //   T4  dispatch: BEGIN; SELECT ... FOR UPDATE — BLOCKS on holdingTx
+    //   T5  holdingTx: COMMIT (assignee now B)
+    //   T6  dispatch: FOR UPDATE returns lockedRoutine.assignee = B
+    //   T7  with fix: issue created with assignee B (fresh)
+    //       without fix: issue created with assignee A (stale snapshot)
+    //
+    // We orchestrate by starting holdingTx first and giving it ~10ms to
+    // open the transaction + take the row lock before tick begins; then
+    // holdingTx sleeps ~80ms inside the tx (longer than tick's SELECT +
+    // claim path) so the dispatch's FOR UPDATE blocks until after the
+    // re-assignment commits.
+    const holdingTx = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`,
+      );
+      await tx
+        .update(routines)
+        .set({ assigneeAgentId: agentB })
+        .where(eq(routines.id, routine.id));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    // Give the holding tx a moment to acquire the row lock before tick
+    // captures its (still-stale) snapshot.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const tick = svc.tickScheduledTriggers(new Date());
+
+    await Promise.all([holdingTx, tick]);
+
+    const [createdIssue] = await db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.originId, routine.id),
+          eq(issues.originKind, "routine_execution"),
+        ),
+      );
+
+    expect(createdIssue).toBeDefined();
+    expect(createdIssue.assigneeAgentId).toBe(agentB);
+    expect(createdIssue.assigneeAgentId).not.toBe(agentA);
   });
 
 });
