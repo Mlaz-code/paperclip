@@ -812,10 +812,6 @@ export function routineService(
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
-    const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
-    if (!assigneeAgentId) {
-      throw unprocessable("Default agent required");
-    }
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -844,21 +840,42 @@ export function routineService(
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
-    const dispatchFingerprint = createRoutineDispatchFingerprint({
-      payload: triggerPayload,
-      projectId,
-      assigneeAgentId,
-      executionWorkspaceId: input.executionWorkspaceId ?? null,
-      executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-      executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-      title,
-      description,
-    });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await tx.execute(
-        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
-      );
+      // SHA-3629: re-read the row under FOR UPDATE and derive assigneeAgentId
+      // and dispatchFingerprint from the locked values, not the input
+      // snapshot. The snapshot passed by tickScheduledTriggers can be minutes
+      // stale (PATCH /routines races the next tick), and acting on it routed
+      // executions to the previous assignee for at least one cycle after a
+      // reassignment.
+      const [lockedRoutine] = await txDb
+        .select()
+        .from(routines)
+        .where(
+          and(
+            eq(routines.id, input.routine.id),
+            eq(routines.companyId, input.routine.companyId),
+          ),
+        )
+        .for("update");
+      if (!lockedRoutine) {
+        throw unprocessable("Routine vanished while dispatching");
+      }
+      const assigneeAgentId =
+        input.assigneeAgentId ?? lockedRoutine.assigneeAgentId ?? null;
+      if (!assigneeAgentId) {
+        throw unprocessable("Default agent required");
+      }
+      const dispatchFingerprint = createRoutineDispatchFingerprint({
+        payload: triggerPayload,
+        projectId,
+        assigneeAgentId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+        executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+        title,
+        description,
+      });
 
       if (input.idempotencyKey) {
         const existing = await txDb
@@ -904,7 +921,7 @@ export function routineService(
 
       // Skip issue creation — fire heartbeat directly
       if (input.routine.skipIssueCreation) {
-        await heartbeat.wakeup(input.routine.assigneeAgentId!, {
+        await heartbeat.wakeup(assigneeAgentId, {
           source: "timer",
           triggerDetail: "system",
           reason: "routine_heartbeat",
