@@ -33,6 +33,8 @@ export const routines = pgTable(
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     skipIssueCreation: boolean("skip_issue_creation").notNull().default(false),
+    expectedMaxQueueDepth: integer("expected_max_queue_depth"),
+    costBudgetMonthlyCents: integer("cost_budget_monthly_cents"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
