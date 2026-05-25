@@ -24,6 +24,7 @@ import {
   issueThreadInteractions,
   issues,
   labels,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -537,6 +538,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake || agentPause);
+  }
+
+  // SHA-3580: a routine_execution issue's live continuation path is its next
+  // scheduled cron fire, not a heartbeat run or deferred wake. Returns true while
+  // the routine has an enabled trigger with a future next_run_at. A disabled or
+  // NULL/past-due trigger (the genuinely-stuck-scheduler class) does not match —
+  // `gt` over a NULL next_run_at excludes the row — so those stay recoverable.
+  async function hasFutureScheduledRoutineTrigger(companyId: string, routineId: string) {
+    const row = await db
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .where(
+        and(
+          eq(routineTriggers.companyId, companyId),
+          eq(routineTriggers.routineId, routineId),
+          eq(routineTriggers.enabled, true),
+          gt(routineTriggers.nextRunAt, sql`now()`),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2478,6 +2501,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // SHA-3580: routine_execution issues are intentionally parked at in_progress
+      // between fires (their contract: "leave it in_progress so the next nightly
+      // fire reuses it"). The next scheduled trigger IS the continuation path, so
+      // skip recovery while an enabled trigger has a future next_run_at — otherwise
+      // the reconciler re-wakes them into a redundant child-issue loop every cycle.
+      if (
+        issue.originKind === "routine_execution" &&
+        issue.originId &&
+        (await hasFutureScheduledRoutineTrigger(issue.companyId, issue.originId))
+      ) {
         result.skipped += 1;
         continue;
       }

@@ -26,6 +26,8 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1730,6 +1732,104 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  // SHA-3580: routine_execution issues park at in_progress between fires; their
+  // continuation path is the next scheduled trigger, not a recovery wake.
+  async function attachSucceededHandoffContext(runId: string, issueId: string) {
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+  }
+
+  async function attachRoutineExecutionOrigin(input: {
+    companyId: string;
+    issueId: string;
+    enabled: boolean;
+    nextRunAt: Date | null;
+  }) {
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId: input.companyId,
+      title: "Nightly League Registry Drift Audit",
+    });
+    await db.insert(routineTriggers).values({
+      companyId: input.companyId,
+      routineId,
+      kind: "schedule",
+      enabled: input.enabled,
+      cronExpression: "0 11 * * *",
+      nextRunAt: input.nextRunAt,
+    });
+    await db
+      .update(issues)
+      .set({ originKind: "routine_execution", originId: routineId })
+      .where(eq(issues.id, input.issueId));
+    return { routineId };
+  }
+
+  it("skips recovery for a routine_execution issue with a future scheduled trigger (SHA-3580)", async () => {
+    const { companyId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await attachSucceededHandoffContext(runId, issueId);
+    // nextRunAt must be in the future relative to the DB clock (the guard uses
+    // SQL now(), not the fixture's fixed seed clock), so anchor off Date.now().
+    await attachRoutineExecutionOrigin({
+      companyId,
+      issueId,
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("still escalates a routine_execution issue whose trigger is past-due (SHA-3580)", async () => {
+    const { companyId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await attachSucceededHandoffContext(runId, issueId);
+    // A stuck scheduler (next_run_at in the past) is NOT a live continuation path —
+    // the issue must remain recoverable so genuine strandings still escalate.
+    await attachRoutineExecutionOrigin({
+      companyId,
+      issueId,
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(1);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
