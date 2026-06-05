@@ -1,0 +1,2 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN "issue_id" text GENERATED ALWAYS AS (coalesce(context_snapshot ->> 'issueId', context_snapshot ->> 'taskId', context_snapshot ->> 'taskKey')) STORED;--> statement-breakpoint
+CREATE INDEX "heartbeat_runs_company_agent_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id","issue_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);

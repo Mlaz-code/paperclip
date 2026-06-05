@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS "heartbeat_runs_company_agent_issue_created_idx";--> statement-breakpoint
+CREATE INDEX "heartbeat_runs_company_agent_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id","issue_id","created_at" DESC,"id" DESC);
