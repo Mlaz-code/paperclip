@@ -2450,6 +2450,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  // Bound per-sweep work so one cycle can't fan out to an unbounded number of
+  // issues (each candidate fires several heartbeat_runs queries). random() ordering
+  // samples a different subset each sweep so no issue is permanently starved;
+  // combined with the scheduler-level sweep mutex, the backlog drains over cycles.
+  const RECONCILE_MAX_CANDIDATES_PER_SWEEP = 200;
   async function reconcileStrandedAssignedIssues() {
     const exemptLabelSubquery = db
       .select({ issueId: issueLabels.issueId })
@@ -2472,7 +2477,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sql`${issues.assigneeAgentId} is not null`,
           notExists(exemptLabelSubquery),
         ),
-      );
+      )
+      .orderBy(sql`random()`)
+      .limit(RECONCILE_MAX_CANDIDATES_PER_SWEEP);
 
     const result = {
       assignmentDispatched: 0,

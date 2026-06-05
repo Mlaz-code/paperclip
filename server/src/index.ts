@@ -717,8 +717,17 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
-    const routines = routineService(db as any, { pluginWorkerManager });
+    // Isolate the background scheduler/recovery sweeps on their own small pool so a
+    // slow or runaway sweep can never exhaust the request-serving pool (the cause of
+    // the 2026-06 pool-exhaustion storm). heartbeatService builds its recoveryService
+    // from this same db, so the whole sweep chain inherits the isolated pool.
+    // Tune via PAPERCLIP_SCHEDULER_DB_POOL_MAX (default 8).
+    const schedulerDb = createDb(activeDatabaseConnectionString, {
+      max: Number(process.env.PAPERCLIP_SCHEDULER_DB_POOL_MAX ?? 8),
+      applicationName: "paperclip-scheduler",
+    });
+    const heartbeat = heartbeatService(schedulerDb as any, { pluginWorkerManager });
+    const routines = routineService(schedulerDb as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -763,6 +772,12 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+
+    // Guard so the heavy recovery sweep can't stack. If the previous sweep is
+    // still in flight when the next interval fires, skip this cycle's sweep.
+    // Without this, scans that overran the interval stacked dozens of identical
+    // sweeps concurrently and exhausted the DB connection pool.
+    let recoverySweepRunning = false;
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -794,6 +809,11 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
+      if (recoverySweepRunning) {
+        logger.warn("skipping heartbeat recovery sweep; previous sweep still in flight");
+        return;
+      }
+      recoverySweepRunning = true;
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.promoteDueScheduledRetries())
@@ -834,6 +854,9 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
+        })
+        .finally(() => {
+          recoverySweepRunning = false;
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

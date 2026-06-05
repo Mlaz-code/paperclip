@@ -1,4 +1,5 @@
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -54,14 +55,50 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // DB-maintained scope key: issueId, falling back to taskId/taskKey, extracted
+    // from context_snapshot. Lets per-issue heartbeat_runs lookups filter on a real
+    // indexed column instead of a 3-way JSONB OR (text, so non-uuid keys never throw).
+    issueId: text("issue_id").generatedAlwaysAs(
+      sql`coalesce(context_snapshot ->> 'issueId', context_snapshot ->> 'taskId', context_snapshot ->> 'taskKey')`,
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
+    // NOTE: index ordering below is rendered with NULLS LAST by drizzle's .desc();
+    // the authoritative migrations (0093-0095) create them with default DESC
+    // (NULLS FIRST) to match query ORDER BY. created_at/id are NOT NULL so this is
+    // semantically identical. drizzle-kit generate is unusable here (snapshot drift).
+    companyAgentCreatedIdx: index("heartbeat_runs_company_agent_created_idx").on(
       table.companyId,
       table.agentId,
-      table.startedAt,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    agentStatusCreatedIdx: index("heartbeat_runs_agent_status_created_idx").on(
+      table.agentId,
+      table.status,
+      table.createdAt.desc(),
+    ),
+    companyCreatedIdx: index("heartbeat_runs_company_created_idx").on(
+      table.companyId,
+      table.createdAt.desc(),
+    ),
+    companyIssueidCreatedIdx: index("heartbeat_runs_company_issueid_created_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot} ->> 'issueId')`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    scheduledRetryDueIdx: index("heartbeat_runs_scheduled_retry_due_idx")
+      .on(table.scheduledRetryAt, table.createdAt, table.id)
+      .where(sql`${table.status} = 'scheduled_retry'`),
+    companyAgentIssueCreatedIdx: index("heartbeat_runs_company_agent_issue_created_idx").on(
+      table.companyId,
+      table.agentId,
+      table.issueId,
+      table.createdAt.desc(),
+      table.id.desc(),
     ),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,

@@ -133,11 +133,11 @@ function parseThermometerLastFiredAt(description: string | null | undefined): Da
 }
 
 function issueRunScopeSql(issueId: string) {
-  return sql`(
-    ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskKey' = ${issueId}
-  )`;
+  // Filters on the DB-maintained generated column heartbeat_runs.issue_id, which is
+  // coalesce(context_snapshot->>'issueId','taskId','taskKey'). Equivalent to the
+  // former 3-way JSONB OR for all real call sites (callers always pass the issue id),
+  // but served by heartbeat_runs_company_agent_issue_created_idx instead of a seq scan.
+  return eq(heartbeatRuns.issueId, issueId);
 }
 
 function msToHuman(ms: number | null) {

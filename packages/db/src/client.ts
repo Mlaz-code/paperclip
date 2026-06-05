@@ -45,8 +45,20 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+export function createDb(url: string, opts?: { max?: number; applicationName?: string }) {
+  // Default postgres.js pool max is 10 — too small for the API server under
+  // concurrent load. Saturation symptom is requests hanging indefinitely
+  // (server still logs 2xx because the handler completes, but the body
+  // never reaches the client since the response is queued behind other
+  // pool-bound work). Bump to 50; tune via env if needed. A caller may pass a
+  // smaller `max` (e.g. the background scheduler) to isolate its pool from the
+  // request-serving pool so a runaway sweep can't starve API requests, and an
+  // `applicationName` to make those connections identifiable in pg_stat_activity.
+  const maxConnections = opts?.max ?? Number(process.env.PAPERCLIP_DB_POOL_MAX ?? 50);
+  const sql = postgres(url, {
+    max: maxConnections,
+    ...(opts?.applicationName ? { connection: { application_name: opts.applicationName } } : {}),
+  });
   return drizzlePg(sql, { schema });
 }
 
