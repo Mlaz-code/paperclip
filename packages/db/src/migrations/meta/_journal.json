@@ -659,6 +659,34 @@
       "when": 1779840000000,
       "tag": "0093_issues_cas_lock_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1779840001000,
+      "tag": "0094_heartbeat_issue_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1779840002000,
+      "tag": "0095_heartbeat_issue_idx_nulls_first",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1779840003000,
+      "tag": "0096_heartbeat_index_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1780662289307,
+      "tag": "0097_bumpy_vanisher",
+      "breakpoints": true
     }
   ]
 }

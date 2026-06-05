@@ -1,0 +1,4 @@
+-- Snapshot re-baseline (intentional no-op).
+-- Refreshes meta snapshot to the post-#18/#19 + heartbeat-storm-fix schema so
+-- drizzle-kit generate produces correct diffs again. Every statement it generated
+-- targets objects already created by migrations 0001-0096, so the body is empty.
